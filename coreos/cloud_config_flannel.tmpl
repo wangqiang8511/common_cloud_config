@@ -1,0 +1,62 @@
+#cloud-config
+
+coreos:
+  units:
+  - name: docker-tcp.socket
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Docker Socket for the API
+
+      [Socket]
+      ListenStream=2375
+      Service=docker.service
+      BindIPv6Only=both
+
+      [Install]
+      WantedBy=sockets.target
+  - name: flannel-download.service
+    command: start
+    content: |
+      [Unit]
+      After=network-online.target
+      Before=flannel.service
+      Description=Download Flannel Binaries
+      Requires=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/wget -N -P /opt/bin {{ flannel_download_uri }}
+      ExecStart=/usr/bin/chmod +x /opt/bin/flanneld
+      RemainAfterExit=yes
+      Type=oneshot
+  - name: flannel.service
+    command: start
+    content: |
+      [Unit]
+      Description=Flannel
+      ConditionFileIsExecutable=/opt/bin/flanneld
+      ConditionFileIsExecutable=/usr/bin/etcdctl
+
+      [Service]
+      ExecStartPre=-/usr/bin/etcdctl --peers=http://{{ etcd_server }}:{{ etcd_port }} set /{{ cluster_name }}/network/config '{"Network":"{{ cluster_cidr }}"}'
+      ExecStart=/opt/bin/flanneld -etcd-endpoints=http://{{ etcd_server }}:{{ etcd_port }} -etcd-prefix=/{{ cluster_name }}/network
+  - name: docker.service
+    command: start
+    content: |
+      [Unit]
+      Description=Docker Application Container Engine
+      Documentation=http://docs.docker.com
+      After=docker.socket early-docker.target network.target
+      Requires=docker.socket early-docker.target flannel.service
+
+      [Service]
+      Environment=TMPDIR=/var/tmp
+      EnvironmentFile=-/run/docker_opts.env
+      EnvironmentFile=-/run/flannel/subnet.env
+      LimitNOFILE=1048576
+      LimitNPROC=1048576
+      ExecStart=/usr/bin/docker --daemon --bip=${FLANNEL_SUBNET} --mtu=${FLANNEL_MTU} $DOCKER_OPTS
+
+      [Install]
+      WantedBy=multi-user.target

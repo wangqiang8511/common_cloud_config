@@ -1,4 +1,10 @@
 #cloud-config
+# You need to replace following template vars
+# flannel_download_uri
+# etcd_endpoint
+# cluster_name
+# cluster_cidr
+
 
 coreos:
   units:
@@ -39,8 +45,8 @@ coreos:
       ConditionFileIsExecutable=/usr/bin/etcdctl
 
       [Service]
-      ExecStartPre=-/usr/bin/etcdctl --peers=http://{{ etcd_server }}:{{ etcd_port }} set /{{ cluster_name }}/network/config '{"Network":"{{ cluster_cidr }}"}'
-      ExecStart=/opt/bin/flanneld -etcd-endpoints=http://{{ etcd_server }}:{{ etcd_port }} -etcd-prefix=/{{ cluster_name }}/network
+      ExecStartPre=-/usr/bin/etcdctl --peers={{ etcd_endpoint }} set /{{ cluster_name }}/network/config '{"Network":"{{ cluster_cidr }}"}'
+      ExecStart=/opt/bin/flanneld -etcd-endpoints={{ etcd_endpoint }} -etcd-prefix=/{{ cluster_name }}/network
   - name: docker.service
     command: start
     content: |

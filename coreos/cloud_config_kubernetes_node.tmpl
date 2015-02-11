@@ -1,0 +1,170 @@
+#cloud-config
+# You need to replace following template vars
+# flannel_download_uri
+# etcd_endpoint
+# cluster_name
+# cluster_cidr
+# kubernetes_download_uri
+# dns_resolver
+
+
+# Fleet config file
+write_files:
+  - path: /etc/fleet.conf
+    content: |
+      etcd_servers=["{{ etcd_endpoint }}"]
+      etcd_key_prefix="_fleet_{{ cluster_name }}"
+  - path: /etc/resolv.conf
+    content: |
+        nameserver {{ dns_resolver }}
+
+coreos:
+  units:
+  # Docker TCP
+  - name: docker-tcp.socket
+    command: start
+    enable: true
+    content: |
+      [Unit]
+      Description=Docker Socket for the API
+
+      [Socket]
+      ListenStream=2375
+      Service=docker.service
+      BindIPv6Only=both
+
+      [Install]
+      WantedBy=sockets.target
+
+  # Download flannel
+  - name: flannel-download.service
+    command: start
+    content: |
+      [Unit]
+      After=network-online.target
+      Before=flannel.service
+      Description=Download Flannel Binaries
+      Requires=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/mkdir -p /opt/bin
+      ExecStart=/usr/bin/wget -N -P /opt/bin {{ flannel_download_uri }}/flanneld
+      ExecStart=/usr/bin/chmod +x /opt/bin/flanneld
+      RemainAfterExit=yes
+      Type=oneshot
+
+  # Flannel service
+  - name: flannel.service
+    command: start
+    content: |
+      [Unit]
+      Description=Flannel
+      ConditionFileIsExecutable=/opt/bin/flanneld
+      ConditionFileIsExecutable=/usr/bin/etcdctl
+
+      [Service]
+      ExecStartPre=-/usr/bin/etcdctl --peers={{ etcd_endpoint }} set /{{ cluster_name }}/network/config '{"Network":"{{ cluster_cidr }}"}'
+      ExecStart=/opt/bin/flanneld -etcd-endpoints={{ etcd_endpoint}} -etcd-prefix=/{{ cluster_name }}/network
+
+  # Docker service
+  - name: docker.service
+    command: start
+    content: |
+      [Unit]
+      Description=Docker Application Container Engine
+      Documentation=http://docs.docker.com
+      After=docker.socket early-docker.target network.target
+      Requires=docker.socket early-docker.target flannel.service
+
+      [Service]
+      Environment=TMPDIR=/var/tmp
+      EnvironmentFile=-/run/docker_opts.env
+      EnvironmentFile=-/run/flannel/subnet.env
+      LimitNOFILE=1048576
+      LimitNPROC=1048576
+      ExecStart=/usr/bin/docker --daemon --bip=${FLANNEL_SUBNET} --mtu=${FLANNEL_MTU} $DOCKER_OPTS
+
+      [Install]
+      WantedBy=multi-user.target
+
+  # Download kubernetes binary
+  - name: kube-download.service
+    command: start
+    content: |
+      [Unit]
+      After=network-online.target
+      Description=Download Kubernetes Binaries
+      Requires=network-online.target
+
+      [Service]
+      ExecStart=/usr/bin/mkdir -p /opt/bin
+      ExecStart=/usr/bin/wget -N -P /opt/bin {{ kubernetes_download_uri }}/kubelet
+      ExecStart=/usr/bin/wget -N -P /opt/bin {{ kubernetes_download_uri }}/kube-proxy
+      ExecStart=/usr/bin/chmod +x /opt/bin/kubelet
+      ExecStart=/usr/bin/chmod +x /opt/bin/kube-proxy
+      RemainAfterExit=yes
+      Type=oneshot
+
+  # Start fleet
+  - name: fleet.socket
+    command: start
+    enable: true
+    content: |
+      [Socket]
+      ListenStream=/var/run/fleet.sock
+      
+      [Install]
+      WantedBy=sockets.target
+
+
+  - name: fleet.service
+    command: start
+    content: |
+      [Unit]
+      Description=fleet daemon
+      Wants=fleet.socket
+      After=fleet.socket
+      
+      [Service]
+      Environment="FLEET_METADATA=role=node"
+      ExecStart=/usr/bin/fleetd -config=/etc/fleet.conf
+      Restart=always
+      RestartSec=10s
+
+  # Start kubelet
+  - name: kubelet.service
+    command: start
+    content: |
+      [Unit]
+      Description=Kubernetes Kubelet
+      Requires=fleet.service
+      After=fleet.service
+      Requires=flannel.service
+      After=flannel.service
+      Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+
+      [Service]
+      EnvironmentFile=-/etc/environment
+      ExecStart=/opt/bin/kubelet \
+      --address=0.0.0.0 \
+      --port=10250 \
+      --hostname_override=${COREOS_PRIVATE_IPV4} \
+      --etcd_servers={{ etcd_endpoint }} \
+      --logtostderr=true
+      Restart=always
+      RestartSec=10
+
+  # Start kube-proxy
+  - name: kube-proxy.service
+    command: start
+    content: |
+      [Unit]
+      Description=Kubernetes Proxy
+      Requires=kubelet.service
+      After=kubelet.service
+      Documentation=https://github.com/GoogleCloudPlatform/kubernetes
+
+      [Service]
+      ExecStart=/opt/bin/kube-proxy \
+      --etcd_servers={{ etcd_endpoint }} \
+      --logtostderr=true
